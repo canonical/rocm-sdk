@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "enabledManagers": [
+    "custom.regex"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^VERSION$/"],
+      "matchStrings": [
+        "(?<currentValue>[0-9.]+)"
+      ],
+      "depNameTemplate": "ROCm/ROCm",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^rocm-(?<version>.*)$",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "baseBranchPatterns": [
+    "7.0",
+    "7.1",
+    "7.2"
+  ],
+  "packageRules": [
+    {
+      "matchPackageNames": ["ROCm/ROCm"],
+      "matchBaseBranches": ["7.0"],
+      "allowedVersions": "/^7\\.0\\./"
+    },
+    {
+      "matchPackageNames": ["ROCm/ROCm"],
+      "matchBaseBranches": ["7.1"],
+      "allowedVersions": "/^7\\.1\\./"
+    },
+    {
+      "matchPackageNames": ["ROCm/ROCm"],
+      "matchBaseBranches": ["7.2"],
+      "allowedVersions": "/^7\\.2\\./"
+    }
+  ]
+}

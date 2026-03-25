@@ -1,0 +1,32 @@
+set -eu
+
+ROCM_ROOT="${ROCM_INSTALL_PREFIX:-/opt/rocm}"
+INFO_FILE=/etc/rocm-sdk/install-info
+
+fail() {
+  workshopctl set-health --code="$1" error "$2"
+  exit 0
+}
+
+[ -d "${ROCM_ROOT}" ] || fail "rocm-missing-root" "ROCM_ROOT ${ROCM_ROOT} not found"
+[ -x "${ROCM_ROOT}/bin/rocminfo" ] || [ -x "${ROCM_ROOT}/bin/rocm-smi" ] || \
+  fail "rocm-missing-binaries" "No ROCm binaries found under ${ROCM_ROOT}"
+
+VERSION="unknown"
+if [ -f "${ROCM_ROOT}/.info/version" ]; then
+  VERSION=$(cat "${ROCM_ROOT}/.info/version")
+elif dpkg-query -W -f='${Version}' rocm-dev >/dev/null 2>&1; then
+  VERSION=$(dpkg-query -W -f='${Version}' rocm-dev)
+elif dpkg-query -W -f='${Version}' rocm-libs >/dev/null 2>&1; then
+  VERSION=$(dpkg-query -W -f='${Version}' rocm-libs)
+elif [ -f "${INFO_FILE}" ]; then
+  VERSION=$(grep '^version=' "${INFO_FILE}" | cut -d'=' -f2-)
+fi
+
+[ -n "${VERSION}" ] || fail "rocm-version-unknown" "ROCm version unknown"
+
+if command -v rocminfo >/dev/null 2>&1; then
+  PATH="${ROCM_ROOT}/bin:${PATH}" rocminfo >/dev/null 2>&1 || true
+fi
+
+workshopctl set-health okay

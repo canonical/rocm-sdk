@@ -1,8 +1,8 @@
 # ROCm SDK for Workshop
 
-A development environment for AMD GPU compute projects. It provides the ROCm
-runtime and development tools installed from the official AMD APT repository,
-with GPU passthrough to the workshop.
+An AMD GPU runtime and development toolkit. It installs ROCm from the official
+AMD APT repository, typically alongside a language SDK for GPU-accelerated
+workloads.
 
 ---
 
@@ -12,20 +12,21 @@ A minimal workshop:
 
 ```yaml
 # workshop.yaml
-name: rocm-app
+name: gpu-workload
 base: ubuntu@24.04
 sdks:
+  - name: uv
+    channel: all/edge
   - name: rocm
-    channel: 7.1/edge
+    channel: 24.04/edge
 
 actions:
-  check: |
+  check-gpu: |
     rocminfo
-  build: |
-    hipcc main.cpp -o main
 ```
 
-This demonstrates a basic ROCm workflow with GPU access for HIP compilation.
+This demonstrates GPU access verification inside a workshop with both a
+language SDK and the ROCm companion runtime.
 
 ---
 
@@ -33,52 +34,32 @@ This demonstrates a basic ROCm workflow with GPU access for HIP compilation.
 
 ### Prerequisites, project layout
 
-1. An AMD GPU with ROCm support must be available on the host.
-2. Your HIP/ROCm project should be in your project directory:
+The SDK installs the complete ROCm GPU compute development and system toolset
+from the AMD APT repository and automatically configures environment paths.
 
-   ```bash
-   git clone <YOUR_REPO_URL>
-   ```
+To build a project in the workshop:
 
-3. On launch, the SDK installs the ROCm stack from the official AMD APT
-   repository, configures `PATH`, library paths, and sets standard ROCm
-   environment variables (`ROCM_PATH`, `HIP_PATH`, etc.).
+```bash
+git clone git@github.com:ROCm/rocm-examples.git
+workshop launch
+workshop shell
+make
+```
 
-### Build the project
+### Verify GPU access
 
 Once the workshop is ready:
 
 ```bash
 workshop shell
-hipcc main.cpp -o main
+rocminfo
 ```
 
-Standard ROCm tools (`hipcc`, `rocminfo`, `rocm-smi`, `amdclang++`, etc.) are
-available on PATH.
-
-### Check GPU access
+This lists detected AMD GPUs and their capabilities. For a monitoring view:
 
 ```bash
-workshop shell
-rocminfo
 rocm-smi
 ```
-
-### Environment variables
-
-The SDK sets the following environment variables via `/etc/profile.d/rocm-sdk.sh`:
-
-- `ROCM_PATH` — ROCm installation prefix (default `/opt/rocm`)
-- `ROCM_HOME` — Same as `ROCM_PATH`
-- `HIP_PATH` — HIP installation prefix
-- `HSA_PATH` — HSA runtime prefix
-
-### Customisation
-
-The setup-base hook supports environment variable overrides:
-
-- `ROCM_PACKAGES` — APT meta-package(s) to install (default: `rocm-dev`)
-- `ROCM_INSTALL_PREFIX` — Installation prefix (default: `/opt/rocm`)
 
 ---
 
@@ -87,21 +68,54 @@ The setup-base hook supports environment variable overrides:
 ### `gpu`
 
 - Interface: `gpu`
-- Purpose: Passes through the host GPU to the workshop for ROCm compute.
+- Purpose: Grants access to AMD GPU hardware on the host.
+
+## Slots (resources this SDK provides)
+
+This SDK doesn't define any slots.
 
 ---
 
-## Branch and release strategy
+## Documentation and guidance
 
-Each supported ROCm minor release series has its own branch:
+- [ROCm official documentation](https://rocm.docs.amd.com/)
+- [Workshop documentation](https://canonical-workshop.readthedocs-hosted.com/latest/)
 
-| Branch | ROCm series | Renovate constraint |
-|--------|-------------|---------------------|
-| `6.3`  | 6.3.x       | `^6.3.`             |
-| `7.0`  | 7.0.x       | `^7.0.`             |
-| `7.1`  | 7.1.x       | `^7.1.`             |
+---
 
-Renovate monitors GitHub releases from
-[ROCm/ROCm](https://github.com/ROCm/ROCm) and proposes patch-level updates
-within each branch. The `VERSION` file is the single source of truth for the
-ROCm version.
+## Community and support
+
+- ROCm community: [ROCm GitHub](https://github.com/ROCm/ROCm)
+- Workshop forum:
+  [Workshop Discourse](https://discourse.canonical.com/c/engineering/workshops/34)
+- Please review our
+  [Code of Conduct](https://ubuntu.com/community/ethos/code-of-conduct) before
+  participating.
+
+---
+
+## Contributions
+
+All contributions, including code, documentation updates, and issue reports,
+are welcome!
+
+- See `CONTRIBUTING.md` for guidelines.
+- Open issues or pull requests on the official repository.
+
+---
+
+## License and copyright
+
+Copyright 2025 Canonical Ltd.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the
+[GNU Lesser General Public License version 2.1 (LGPLv2.1)](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
+as published by the Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Lesser General Public License for more details.
+
+[ROCm](https://github.com/ROCm/ROCm) is licensed under the
+[MIT License](https://opensource.org/licenses/MIT).
