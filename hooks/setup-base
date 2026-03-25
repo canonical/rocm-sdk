@@ -1,0 +1,71 @@
+set -eu
+
+export DEBIAN_FRONTEND=noninteractive
+
+ROCM_ROOT="${ROCM_INSTALL_PREFIX:-/opt/rocm}"
+ROCM_APT_BASE_URL="${ROCM_APT_BASE_URL:-https://repo.radeon.com/rocm/apt}"
+ROCM_APT_VERSION="${ROCM_APT_VERSION:-$(cat "$SDK/version")}"
+ROCM_APT_SERIES="${ROCM_APT_SERIES:-$(cat "$SDK/series")}"
+ROCM_PACKAGES="${ROCM_PACKAGES:-rocm-dev}"
+ROCM_FORCE_REINSTALL="${ROCM_FORCE_REINSTALL:-0}"
+ROCM_KEY_URL="${ROCM_KEY_URL:-https://repo.radeon.com/rocm/rocm.gpg.key}"
+INFO_FILE=/etc/rocm-sdk/install-info
+
+if [ "${ROCM_FORCE_REINSTALL}" != "1" ] && [ -x "${ROCM_ROOT}/bin/rocminfo" ]; then
+  echo "ROCm already present in ${ROCM_ROOT}; set ROCM_FORCE_REINSTALL=1 to force reinstall."
+  exit 0
+fi
+
+apt-get update
+apt-get install ca-certificates wget gnupg
+
+mkdir -p /etc/apt/keyrings
+wget -qO- "${ROCM_KEY_URL}" | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] ${ROCM_APT_BASE_URL}/${ROCM_APT_VERSION} ${ROCM_APT_SERIES} main" \
+  | tee /etc/apt/sources.list.d/rocm.list >/dev/null
+
+cat <<EOF | tee /etc/apt/preferences.d/rocm-pin-600 >/dev/null
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+EOF
+
+apt-get update
+# shellcheck disable=SC2086
+apt-get install ${ROCM_PACKAGES}
+
+mkdir -p /etc/profile.d /etc/ld.so.conf.d /etc/rocm-sdk
+cat <<EOF | tee /etc/profile.d/rocm-sdk.sh >/dev/null
+export ROCM_PATH=${ROCM_ROOT}
+export ROCM_HOME=${ROCM_ROOT}
+export HIP_PATH=${ROCM_ROOT}
+export HSA_PATH=${ROCM_ROOT}
+export PATH=${ROCM_ROOT}/bin:\$PATH
+EOF
+cat <<EOF | tee /etc/ld.so.conf.d/rocm-sdk.conf >/dev/null
+${ROCM_ROOT}/lib
+${ROCM_ROOT}/lib64
+EOF
+
+ldconfig
+
+if [ -f "${ROCM_ROOT}/.info/version" ]; then
+  ROCM_VERSION="$(cat "${ROCM_ROOT}/.info/version")"
+elif dpkg-query -W -f='${Version}' rocm-dev >/dev/null 2>&1; then
+  ROCM_VERSION="$(dpkg-query -W -f='${Version}' rocm-dev)"
+elif dpkg-query -W -f='${Version}' rocm-libs >/dev/null 2>&1; then
+  ROCM_VERSION="$(dpkg-query -W -f='${Version}' rocm-libs)"
+else
+  ROCM_VERSION="unknown"
+fi
+
+cat <<EOF | tee "${INFO_FILE}" >/dev/null
+repo=${ROCM_APT_BASE_URL}/${ROCM_APT_VERSION}
+series=${ROCM_APT_SERIES}
+packages=${ROCM_PACKAGES}
+prefix=${ROCM_ROOT}
+version=${ROCM_VERSION}
+key-url=${ROCM_KEY_URL}
+EOF
+
+echo "Installed ROCm ${ROCM_VERSION} from ${ROCM_APT_BASE_URL}/${ROCM_APT_VERSION} into ${ROCM_ROOT}."
