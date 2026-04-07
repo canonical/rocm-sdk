@@ -16,9 +16,9 @@ name: gpu-workload
 base: ubuntu@24.04
 sdks:
   - name: uv
-    channel: all/edge
+    channel: 0.9/stable
   - name: rocm
-    channel: 24.04/edge
+    channel: 7.1/stable
 
 actions:
   check-gpu: |
