@@ -8,6 +8,7 @@ description: |
   official AMD ROCm APT repository (default rocm-dev), placing everything under
   /opt/rocm.
 license: MIT
+website: https://github.com/canonical/rocm-sdk
 platforms:
   ubuntu@22.04:amd64:
   ubuntu@24.04:amd64:
