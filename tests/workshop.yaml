@@ -1,0 +1,10 @@
+# Minimal Workshop definition used by the spread test suites.
+#
+# This file is a template: `${ROCM_SDK_CHANNEL}` is expanded by envsubst in the
+# top-level `prepare:` block of spread.yaml before the definition is written to
+# `.workshop/rocm-test.yaml` on the test machine.
+name: rocm-test
+base: ubuntu@24.04
+sdks:
+  - name: rocm
+    channel: ${ROCM_SDK_CHANNEL}

@@ -1,0 +1,23 @@
+name: "Test"
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      sdk-channel:
+        description: "rocm SDK channel to test (e.g. latest/edge, 7.1/stable)"
+        required: false
+        type: string
+        default: "latest/edge"
+      spread-params-extra:
+        description: "Additional parameters to append to SPREAD_PARAMS (e.g. ...gfx-1100:...rocminfo/)"
+        required: false
+        type: string
+        default: ""
+jobs:
+  run-tests:
+    uses: ./.github/workflows/run-tests.yml
+    secrets: inherit
+    with:
+      sdk-channel: ${{ inputs.sdk-channel || 'latest/edge' }}
+      spread-params-extra: ${{ inputs.spread-params-extra || '' }}

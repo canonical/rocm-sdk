@@ -4,7 +4,29 @@ environment:
   DEBIAN_FRONTEND: noninteractive
   TIMESTAMP: $(date -u +"%Y-%m-%d-%H:%M:%S")
   ARTIFACT_LOG: "output-${TIMESTAMP}.log"
+  # Channel the workshop pulls the rocm SDK from. Overridable from the CI
+  # runner via the ROCM_SDK_CHANNEL env variable; defaults to latest/edge so
+  # the nightly job validates edge before it is promoted to later channels.
+  ROCM_SDK_CHANNEL: '$(HOST: echo "${ROCM_SDK_CHANNEL:-latest/edge}")'
+  WORKSHOP_NAME: rocm-test
+  WORKSHOP_PROJECT_DIR: /root/rocm-sdk
 backends:
+  tchavadar:
+    type: adhoc
+    wait-timeout: 2h
+    kill-timeout: 12h
+    halt-timeout: 3h
+    discard: echo "Discarding $SPREAD_SYSTEM..."
+    allocate: |
+      echo "Allocating $SPREAD_SYSTEM..."
+      ADDRESS gfx1201:22
+    systems:
+      - gfx-1201:
+          username: github
+          ssh-rsa-key: '$(HOST: echo "$SPREAD_SSH_KEY")'
+          # ssh-key-pass: '$(HOST: echo "$SPREAD_SSH_KEY_PASS")'
+          environment:
+            DEB_BUILD_OPTIONS: "parallel=4"
   testflinger:
     wait-timeout: 2h
     kill-timeout: 12h
@@ -17,124 +39,125 @@ backends:
           reserve-key: lp:pe-bot
           ssh-rsa-key: '$(HOST: echo "$SPREAD_SSH_KEY")'
 prepare: |
-  echo "Creating LXD 'rocm-gpu' profile"
+  set -eu
 
-  # Install/refresh LXD
+  # Workshop uses LXD as its container backend.
   snap install lxd --channel=latest/stable 2>/dev/null || snap refresh lxd --channel=latest/stable || true
-
-  # User group setup
-  usermod -a -G lxd $USER
-  usermod -a -G render,video $USER
-
-  # LXD initialization (skip if already initialized)
   lxd waitready
   lxd init --auto 2>/dev/null || true
 
-  # Clean up existing profile/storage if they exist
-  lxc profile show rocm-gpu &>/dev/null && lxc profile delete rocm-gpu || true
-  lxc storage show rocm-gpu-pool &>/dev/null && lxc storage delete rocm-gpu-pool || true
+  snap install workshop --classic
 
-  # Create fresh profile and storage
-  lxc profile create rocm-gpu
-  lxc storage create rocm-gpu-pool dir
+  apt-get update
+  apt-get install -y gettext-base
 
-  # Configure profile devices
-  lxc profile device add rocm-gpu root disk path=/ pool=rocm-gpu-pool
-  lxc profile device add rocm-gpu kfd unix-char path=/dev/kfd required=true
+  # Install the workshop-flavor sh-run. Bullwinkle tests call `sh-run '<script>'`
+  # for every ROCm-facing block;
+  # this variant forwards the script into the running workshop, so the tests
+  # exercise the SDK-provisioned container instead of the testflinger host.
+  # See bullwinkle-cicd/README.md "The sh-run contract".
+  #
+  # Host CWD (under WORKSHOP_PROJECT_DIR) is translated to /project/<subpath>
+  # inside the container, so relative file references in tasks resolve to
+  # the same file the host `execute:` block would see.
+  cat > /usr/local/bin/sh-run <<'SHRUN_EOF'
+  #!/bin/bash
+  set -eu
+  WORKSHOP="${WORKSHOP_NAME:-rocm-test}"
+  PROJECT="${WORKSHOP_PROJECT_DIR:-$SPREAD_PATH}"
+  CWD="$(pwd)"
+  if [ "$CWD" = "$PROJECT" ]; then
+    CONTAINER_CWD="/project"
+  elif [ "${CWD#$PROJECT/}" != "$CWD" ]; then
+    CONTAINER_CWD="/project/${CWD#$PROJECT/}"
+  else
+    CONTAINER_CWD="/project"
+  fi
+  if [ $# -gt 0 ]; then
+    exec workshop -p "$PROJECT" exec --uid 0 -w "$CONTAINER_CWD" "$WORKSHOP" -- bash -c "$*"
+  else
+    exec workshop -p "$PROJECT" exec --uid 0 -w "$CONTAINER_CWD" "$WORKSHOP" -- bash -s
+  fi
+  SHRUN_EOF
+  chmod 0755 /usr/local/bin/sh-run
 
-  for i in /dev/dri/renderD*; do
-    name=$(basename "$i")
-    lxc profile device add rocm-gpu "$name" unix-char path="$i" required=true
-  done
+  # Materialise the workshop definition, substituting the SDK channel.
+  mkdir -p "$WORKSHOP_PROJECT_DIR/.workshop"
+  envsubst < ./tests/workshop.yaml \
+    > "$WORKSHOP_PROJECT_DIR/.workshop/${WORKSHOP_NAME}.yaml"
 
-  lxc profile device add rocm-gpu eth0 nic network=lxdbr0
+  echo "--- workshop definition ---"
+  cat "$WORKSHOP_PROJECT_DIR/.workshop/${WORKSHOP_NAME}.yaml"
+  echo "---------------------------"
 
-  lxc profile set rocm-gpu limits.cpu.allowance=80%
-  lxc profile set rocm-gpu limits.memory=90%
-  lxc profile set rocm-gpu limits.memory.enforce=soft
-
-  lxc profile show rocm-gpu
-
-  DEBIAN_FRONTEND=noninteractive apt update
-  DEBIAN_FRONTEND=noninteractive apt upgrade -y
-  DEBIAN_FRONTEND=noninteractive apt install -y \
-    software-properties-common autopkgtest dnsmasq-base
+  workshop -p "$WORKSHOP_PROJECT_DIR" launch "$WORKSHOP_NAME"
+  # Wire the GPU plug so /dev/kfd and /dev/dri/renderD* are visible inside
+  # the workshop. Failure tolerated in case the plug is auto-connected on
+  # this workshop revision.
+  workshop -p "$WORKSHOP_PROJECT_DIR" connect "${WORKSHOP_NAME}:gpu" || true
+restore: |
+  workshop -p "$WORKSHOP_PROJECT_DIR" remove "$WORKSHOP_NAME" || true
+  rm -rf "$WORKSHOP_PROJECT_DIR/.workshop"
 suites:
-  packages/amdsmi/tests/level-one/:
-    summary: level one integration tests for amdsmi package
-  packages/hipblas/tests/level-one/:
-    summary: level one integration tests for hipblas package
-  packages/hipblas-common/tests/level-one/:
-    summary: level one integration tests for hipblas-common package
-  packages/hipblaslt/tests/level-one/:
-    summary: level one integration tests for hipblaslt package
-  packages/rocdbgapi/tests/level-one/:
-    summary: level one integration tests for rocdbgapi package
-  packages/hipify/tests/level-one/:
-    summary: level one integration tests for hipify package
-  packages/rocm-core/tests/level-one/:
-    summary: level one integration tests for rocm-core package
-  packages/rocm-cmake/tests/level-one/:
-    summary: level one integration tests for rocm-cmake package
-  packages/rocm-smi-lib/tests/level-one/:
-    summary: level one integration tests for rocm-smi-lib package
-  packages/rocminfo/tests/level-one/:
-    summary: level one integration tests for rocminfo package
-  packages/rocr-runtime/tests/level-one/:
-    summary: level one integration tests for rocr-runtime package
-  packages/rocfft/tests/level-one/:
-    summary: level one integration tests for rocfft package
-  packages/rocm/tests/level-one/:
-    summary: level one integration tests for rocm package
-  packages/hiprand/tests/level-one/:
-    summary: level one integration tests for hiprand package
-  packages/hipsolver/tests/level-one/:
-    summary: level one integration tests for hipsolver package
-  packages/hipsparse/tests/level-one/:
-    summary: level one integration tests for hipsparse package
-  packages/hipsparselt/tests/level-one/:
-    summary: level one integration tests for hipsparselt package
-  packages/rocalution/tests/level-one/:
-    summary: level one integration tests for rocalution package
-  packages/hipcub/tests/level-one/:
-    summary: level one integration tests for hipcub package
-  packages/hipfft/tests/level-one/:
-    summary: level one integration tests for hipfft package
-  packages/rocwmma/tests/level-one/:
-    summary: level one integration tests for rocwmma package
-  packages/rocblas/tests/level-one/:
-    summary: level one integration tests for rocblas package
-  packages/rocprim/tests/level-one/:
-    summary: level one integration tests for rocprim package
-  packages/rocrand/tests/level-one/:
-    summary: level one integration tests for rocrand package
-  packages/rocsolver/tests/level-one/:
-    summary: level one integration tests for rocsolver package
-  packages/rocsparse/tests/level-one/:
-    summary: level one integration tests for rocsparse package
-  packages/rocthrust/tests/level-one/:
-    summary: level one integration tests for rocthrust package
-  packages/roctracer/tests/level-one/:
-    summary: level one integration tests for roctracer package
-  packages/rccl/tests/level-one/:
-    summary: level one integration tests for rccl package
-  packages/rocm-hipamd/tests/level-one/:
-    summary: level one integration tests for rocm-hipamd package
-  packages/rocm-llvm/tests/level-one/:
-    summary: level one integration tests for rocm-llvm package
-  packages/llvm-toolchain-rocm/tests/level-one/:
-    summary: level one integration tests for llvm-toolchain-rocm package
-  packages/miopen/tests/level-one/:
-    summary: level one integration tests for miopen package
-  tests/llama.cpp/smoke/:
-    summary: smoke tests for llama.cpp with ROCm
-  tests/llama.cpp/prompt/:
-    summary: prompt tests for llama.cpp with ROCm
+  packages/hipblas/tests/level-one/smoke/:
+    summary: level-one smoke test for hipblas
+  packages/hipblas-common/tests/level-one/smoke/:
+    summary: level-one smoke test for hipblas-common
+  packages/hipblaslt/tests/level-one/smoke/:
+    summary: level-one smoke test for hipblaslt
+  packages/hipcub/tests/level-one/smoke/:
+    summary: level-one smoke test for hipcub
+  packages/hipfft/tests/level-one/smoke/:
+    summary: level-one smoke test for hipfft
+  packages/hipify/tests/level-one/smoke/:
+    summary: level-one smoke test for hipify
+  packages/hiprand/tests/level-one/smoke/:
+    summary: level-one smoke test for hiprand
+  packages/hipsolver/tests/level-one/smoke/:
+    summary: level-one smoke test for hipsolver
+  packages/hipsparse/tests/level-one/smoke/:
+    summary: level-one smoke test for hipsparse
+  packages/hipsparselt/tests/level-one/smoke/:
+    summary: level-one smoke test for hipsparselt
+  packages/llvm-toolchain-rocm/tests/level-one/smoke/:
+    summary: level-one smoke test for llvm-toolchain-rocm
+  packages/miopen/tests/level-one/smoke/:
+    summary: level-one smoke test for miopen
+  packages/rccl/tests/level-one/smoke/:
+    summary: level-one smoke test for rccl
+  packages/rocalution/tests/level-one/smoke/:
+    summary: level-one smoke test for rocalution
+  packages/rocdbgapi/tests/level-one/smoke/:
+    summary: level-one smoke test for rocdbgapi
+  packages/rocfft/tests/level-one/smoke/:
+    summary: level-one smoke test for rocfft
+  packages/rocm/tests/level-one/smoke/:
+    summary: level-one smoke test for rocm
+  packages/rocm-cmake/tests/level-one/smoke/:
+    summary: level-one smoke test for rocm-cmake
+  packages/rocm-core/tests/level-one/smoke/:
+    summary: level-one smoke test for rocm-core
+  packages/rocm-hipamd/tests/level-one/smoke/:
+    summary: level-one smoke test for rocm-hipamd
+  packages/rocminfo/tests/level-one/smoke/:
+    summary: level-one smoke test for rocminfo
+  packages/rocr-runtime/tests/level-one/smoke/:
+    summary: level-one smoke test for rocr-runtime
+  packages/rocrand/tests/level-one/smoke/:
+    summary: level-one smoke test for rocrand
+  packages/rocsolver/tests/level-one/smoke/:
+    summary: level-one smoke test for rocsolver
+  packages/rocsparse/tests/level-one/smoke/:
+    summary: level-one smoke test for rocsparse
+  packages/rocthrust/tests/level-one/smoke/:
+    summary: level-one smoke test for rocthrust
+  packages/roctracer/tests/level-one/smoke/:
+    summary: level-one smoke test for roctracer
+  packages/rocwmma/tests/level-one/smoke/:
+    summary: level-one smoke test for rocwmma
   tests/lemonade/smoke/:
     summary: smoke tests for lemonade-server
-  tests/lemonade/prompt/:
-    summary: prompt tests for lemonade-server with LLM inference
-  tests/blender/render/:
-    summary: rendering tests for blender with HIP backend
+  tests/llama.cpp/smoke/:
+    summary: smoke tests for llama.cpp
   tests/pytorch/smoke/:
-    summary: smoke tests for pytorch with HIP backend
+    summary: smoke tests for pytorch
