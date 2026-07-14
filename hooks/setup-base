@@ -1,6 +1,6 @@
 set -eu
 
-export DEBIAN_FRONTEND=noninteractive
+exubuntu@26.04:amd64port DEBIAN_FRONTEND=noninteractive
 
 ROCM_ROOT="${ROCM_INSTALL_PREFIX:-/opt/rocm}"
 ROCM_APT_BASE_URL="${ROCM_APT_BASE_URL:-https://repo.radeon.com/rocm/apt}"

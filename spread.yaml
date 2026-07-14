@@ -1,15 +1,13 @@
 project: rocm-sdk
-path: /root/rocm-sdk
+path: /home/workshop-runner/rocm-sdk
 environment:
   DEBIAN_FRONTEND: noninteractive
   TIMESTAMP: $(date -u +"%Y-%m-%d-%H:%M:%S")
   ARTIFACT_LOG: "output-${TIMESTAMP}.log"
-  # Channel the workshop pulls the rocm SDK from. Overridable from the CI
-  # runner via the ROCM_SDK_CHANNEL env variable; defaults to latest/edge so
-  # the nightly job validates edge before it is promoted to later channels.
-  ROCM_SDK_CHANNEL: '$(HOST: echo "${ROCM_SDK_CHANNEL:-latest/edge}")'
+  ROCM_SDK_CHANNEL: '$(HOST: echo "${ROCM_SDK_CHANNEL:-latest/stable}")'
   WORKSHOP_NAME: rocm-test
-  WORKSHOP_PROJECT_DIR: /root/rocm-sdk
+  WORKSHOP_USER: workshop-runner
+  WORKSHOP_PROJECT_DIR: /home/workshop-runner/rocm-sdk
 backends:
   tchavadar:
     type: adhoc
@@ -22,7 +20,7 @@ backends:
       ADDRESS gfx1201:22
     systems:
       - gfx-1201:
-          username: github
+          username: talha
           ssh-rsa-key: '$(HOST: echo "$SPREAD_SSH_KEY")'
           # ssh-key-pass: '$(HOST: echo "$SPREAD_SSH_KEY_PASS")'
           environment:
@@ -31,6 +29,7 @@ backends:
     wait-timeout: 2h
     kill-timeout: 12h
     halt-timeout: 3h
+    key: .env
     systems:
       - gfx-1100:
           queue: 202604-38596
@@ -51,39 +50,41 @@ prepare: |
   apt-get update
   apt-get install -y gettext-base
 
+  if ! id "$WORKSHOP_USER" >/dev/null 2>&1; then
+    if [ -d "/home/$WORKSHOP_USER" ]; then
+      useradd --home-dir "/home/$WORKSHOP_USER" --no-create-home --shell /bin/bash "$WORKSHOP_USER"
+    else
+      useradd --home-dir "/home/$WORKSHOP_USER" --create-home --shell /bin/bash "$WORKSHOP_USER"
+    fi
+  fi
+
+  for g in lxd render video; do
+    getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" "$WORKSHOP_USER" || true
+  done
+
+  # spread creates /home/$WORKSHOP_USER as root before prepare runs (it copies
+  # the project into $SPREAD_PATH), so `useradd --create-home` silently skips
+  # ownership on an existing dir. Chown the home explicitly, then the project.
+  chown "$WORKSHOP_USER:$WORKSHOP_USER" "/home/$WORKSHOP_USER"
+  chown -R "$WORKSHOP_USER:$WORKSHOP_USER" "$WORKSHOP_PROJECT_DIR"
+
   # Install the workshop-flavor sh-run. Bullwinkle tests call `sh-run '<script>'`
   # for every ROCm-facing block;
   # this variant forwards the script into the running workshop, so the tests
   # exercise the SDK-provisioned container instead of the testflinger host.
   # See bullwinkle-cicd/README.md "The sh-run contract".
-  #
-  # Host CWD (under WORKSHOP_PROJECT_DIR) is translated to /project/<subpath>
-  # inside the container, so relative file references in tasks resolve to
-  # the same file the host `execute:` block would see.
-  cat > /usr/local/bin/sh-run <<'SHRUN_EOF'
-  #!/bin/bash
-  set -eu
-  WORKSHOP="${WORKSHOP_NAME:-rocm-test}"
-  PROJECT="${WORKSHOP_PROJECT_DIR:-$SPREAD_PATH}"
-  CWD="$(pwd)"
-  if [ "$CWD" = "$PROJECT" ]; then
-    CONTAINER_CWD="/project"
-  elif [ "${CWD#$PROJECT/}" != "$CWD" ]; then
-    CONTAINER_CWD="/project/${CWD#$PROJECT/}"
-  else
-    CONTAINER_CWD="/project"
-  fi
-  if [ $# -gt 0 ]; then
-    exec workshop -p "$PROJECT" exec --uid 0 -w "$CONTAINER_CWD" "$WORKSHOP" -- bash -c "$*"
-  else
-    exec workshop -p "$PROJECT" exec --uid 0 -w "$CONTAINER_CWD" "$WORKSHOP" -- bash -s
-  fi
-  SHRUN_EOF
-  chmod 0755 /usr/local/bin/sh-run
+  install -m 0755 ./tests/sh-run /usr/local/bin/sh-run
 
-  # Materialise the workshop definition, substituting the SDK channel.
+  # Workshop lifecycle: run as $WORKSHOP_USER. `env` bypasses sudo's default
+  # env-reset so the vars below reach the inner shell verbatim.
+  sudo -H -u "$WORKSHOP_USER" env \
+    ROCM_SDK_CHANNEL="$ROCM_SDK_CHANNEL" \
+    WORKSHOP_NAME="$WORKSHOP_NAME" \
+    WORKSHOP_PROJECT_DIR="$WORKSHOP_PROJECT_DIR" \
+    bash <<'BASH_EOF'
+  set -eu
   mkdir -p "$WORKSHOP_PROJECT_DIR/.workshop"
-  envsubst < ./tests/workshop.yaml \
+  envsubst < "$WORKSHOP_PROJECT_DIR/tests/workshop.yaml" \
     > "$WORKSHOP_PROJECT_DIR/.workshop/${WORKSHOP_NAME}.yaml"
 
   echo "--- workshop definition ---"
@@ -91,73 +92,91 @@ prepare: |
   echo "---------------------------"
 
   workshop -p "$WORKSHOP_PROJECT_DIR" launch "$WORKSHOP_NAME"
-  # Wire the GPU plug so /dev/kfd and /dev/dri/renderD* are visible inside
-  # the workshop. Failure tolerated in case the plug is auto-connected on
-  # this workshop revision.
-  workshop -p "$WORKSHOP_PROJECT_DIR" connect "${WORKSHOP_NAME}:gpu" || true
+  BASH_EOF
 restore: |
-  workshop -p "$WORKSHOP_PROJECT_DIR" remove "$WORKSHOP_NAME" || true
-  rm -rf "$WORKSHOP_PROJECT_DIR/.workshop"
+  sudo -H -u "$WORKSHOP_USER" env \
+    WORKSHOP_NAME="$WORKSHOP_NAME" \
+    WORKSHOP_PROJECT_DIR="$WORKSHOP_PROJECT_DIR" \
+    bash -c '
+      workshop -p "$WORKSHOP_PROJECT_DIR" remove "$WORKSHOP_NAME" || true
+      rm -rf "$WORKSHOP_PROJECT_DIR/.workshop"
+    ' || true
 suites:
-  packages/hipblas/tests/level-one/smoke/:
-    summary: level-one smoke test for hipblas
-  packages/hipblas-common/tests/level-one/smoke/:
-    summary: level-one smoke test for hipblas-common
-  packages/hipblaslt/tests/level-one/smoke/:
-    summary: level-one smoke test for hipblaslt
-  packages/hipcub/tests/level-one/smoke/:
-    summary: level-one smoke test for hipcub
-  packages/hipfft/tests/level-one/smoke/:
-    summary: level-one smoke test for hipfft
-  packages/hipify/tests/level-one/smoke/:
-    summary: level-one smoke test for hipify
-  packages/hiprand/tests/level-one/smoke/:
-    summary: level-one smoke test for hiprand
-  packages/hipsolver/tests/level-one/smoke/:
-    summary: level-one smoke test for hipsolver
-  packages/hipsparse/tests/level-one/smoke/:
-    summary: level-one smoke test for hipsparse
-  packages/hipsparselt/tests/level-one/smoke/:
-    summary: level-one smoke test for hipsparselt
-  packages/llvm-toolchain-rocm/tests/level-one/smoke/:
-    summary: level-one smoke test for llvm-toolchain-rocm
-  packages/miopen/tests/level-one/smoke/:
-    summary: level-one smoke test for miopen
-  packages/rccl/tests/level-one/smoke/:
-    summary: level-one smoke test for rccl
-  packages/rocalution/tests/level-one/smoke/:
-    summary: level-one smoke test for rocalution
-  packages/rocdbgapi/tests/level-one/smoke/:
-    summary: level-one smoke test for rocdbgapi
-  packages/rocfft/tests/level-one/smoke/:
-    summary: level-one smoke test for rocfft
-  packages/rocm/tests/level-one/smoke/:
-    summary: level-one smoke test for rocm
-  packages/rocm-cmake/tests/level-one/smoke/:
-    summary: level-one smoke test for rocm-cmake
-  packages/rocm-core/tests/level-one/smoke/:
-    summary: level-one smoke test for rocm-core
-  packages/rocm-hipamd/tests/level-one/smoke/:
-    summary: level-one smoke test for rocm-hipamd
-  packages/rocminfo/tests/level-one/smoke/:
-    summary: level-one smoke test for rocminfo
-  packages/rocr-runtime/tests/level-one/smoke/:
-    summary: level-one smoke test for rocr-runtime
-  packages/rocrand/tests/level-one/smoke/:
-    summary: level-one smoke test for rocrand
-  packages/rocsolver/tests/level-one/smoke/:
-    summary: level-one smoke test for rocsolver
-  packages/rocsparse/tests/level-one/smoke/:
-    summary: level-one smoke test for rocsparse
-  packages/rocthrust/tests/level-one/smoke/:
-    summary: level-one smoke test for rocthrust
-  packages/roctracer/tests/level-one/smoke/:
-    summary: level-one smoke test for roctracer
-  packages/rocwmma/tests/level-one/smoke/:
-    summary: level-one smoke test for rocwmma
+  packages/amdsmi/tests/level-one/:
+    summary: level one integration tests for amdsmi package
+  packages/hipblas/tests/level-one/:
+    summary: level one integration tests for hipblas package
+  packages/hipblas-common/tests/level-one/:
+    summary: level one integration tests for hipblas-common package
+  packages/hipblaslt/tests/level-one/:
+    summary: level one integration tests for hipblaslt package
+  packages/rocdbgapi/tests/level-one/:
+    summary: level one integration tests for rocdbgapi package
+  packages/hipify/tests/level-one/:
+    summary: level one integration tests for hipify package
+  packages/rocm-core/tests/level-one/:
+    summary: level one integration tests for rocm-core package
+  packages/rocm-cmake/tests/level-one/:
+    summary: level one integration tests for rocm-cmake package
+  packages/rocm-smi-lib/tests/level-one/:
+    summary: level one integration tests for rocm-smi-lib package
+  packages/rocminfo/tests/level-one/:
+    summary: level one integration tests for rocminfo package
+  packages/rocr-runtime/tests/level-one/:
+    summary: level one integration tests for rocr-runtime package
+  packages/rocfft/tests/level-one/:
+    summary: level one integration tests for rocfft package
+  packages/rocm/tests/level-one/:
+    summary: level one integration tests for rocm package
+  packages/hiprand/tests/level-one/:
+    summary: level one integration tests for hiprand package
+  packages/hipsolver/tests/level-one/:
+    summary: level one integration tests for hipsolver package
+  packages/hipsparse/tests/level-one/:
+    summary: level one integration tests for hipsparse package
+  packages/hipsparselt/tests/level-one/:
+    summary: level one integration tests for hipsparselt package
+  packages/rocalution/tests/level-one/:
+    summary: level one integration tests for rocalution package
+  packages/hipcub/tests/level-one/:
+    summary: level one integration tests for hipcub package
+  packages/hipfft/tests/level-one/:
+    summary: level one integration tests for hipfft package
+  packages/rocwmma/tests/level-one/:
+    summary: level one integration tests for rocwmma package
+  packages/rocblas/tests/level-one/:
+    summary: level one integration tests for rocblas package
+  packages/rocprim/tests/level-one/:
+    summary: level one integration tests for rocprim package
+  packages/rocrand/tests/level-one/:
+    summary: level one integration tests for rocrand package
+  packages/rocsolver/tests/level-one/:
+    summary: level one integration tests for rocsolver package
+  packages/rocsparse/tests/level-one/:
+    summary: level one integration tests for rocsparse package
+  packages/rocthrust/tests/level-one/:
+    summary: level one integration tests for rocthrust package
+  packages/roctracer/tests/level-one/:
+    summary: level one integration tests for roctracer package
+  packages/rccl/tests/level-one/:
+    summary: level one integration tests for rccl package
+  packages/rocm-hipamd/tests/level-one/:
+    summary: level one integration tests for rocm-hipamd package
+  packages/rocm-llvm/tests/level-one/:
+    summary: level one integration tests for rocm-llvm package
+  packages/llvm-toolchain-rocm/tests/level-one/:
+    summary: level one integration tests for llvm-toolchain-rocm package
+  packages/miopen/tests/level-one/:
+    summary: level one integration tests for miopen package
+  tests/llama.cpp/smoke/:
+    summary: smoke tests for llama.cpp with ROCm
+  tests/llama.cpp/prompt/:
+    summary: prompt tests for llama.cpp with ROCm
   tests/lemonade/smoke/:
     summary: smoke tests for lemonade-server
-  tests/llama.cpp/smoke/:
-    summary: smoke tests for llama.cpp
+  tests/lemonade/prompt/:
+    summary: prompt tests for lemonade-server with LLM inference
+  tests/blender/render/:
+    summary: rendering tests for blender with HIP backend
   tests/pytorch/smoke/:
-    summary: smoke tests for pytorch
+    summary: smoke tests for pytorch with HIP backend
