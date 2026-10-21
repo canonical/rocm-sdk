@@ -4,27 +4,21 @@ environment:
   DEBIAN_FRONTEND: noninteractive
   TIMESTAMP: $(date -u +"%Y-%m-%d-%H:%M:%S")
   ARTIFACT_LOG: "output-${TIMESTAMP}.log"
-  ROCM_SDK_CHANNEL: '$(HOST: echo "${ROCM_SDK_CHANNEL:-latest/stable}")'
+  # Where the workshop gets the rocm SDK from:
+  #   store: SDK Store, channel ROCM_SDK_CHANNEL (nightly).
+  #   try:   pack this checkout with `sdkcraft try` on the test machine and use
+  #          `try-rocm` (PRs).
+  ROCM_SDK_SOURCE: '$(HOST: echo "${ROCM_SDK_SOURCE:-store}")'
+  # Ubuntu 26.04 ships ROCm 7.1.x in the archive; the bullwinkle tasks install
+  # archive package names, so the tests only make sense on that base.
+  ROCM_SDK_CHANNEL: '$(HOST: echo "${ROCM_SDK_CHANNEL:-7.1/stable}")'
+  # VERSION written for `sdkcraft try` when the checkout has none (main).
+  ROCM_SDK_TRY_VERSION: '$(HOST: echo "${ROCM_SDK_TRY_VERSION:-7.1.1}")'
+  WORKSHOP_BASE: '$(HOST: echo "${WORKSHOP_BASE:-ubuntu@26.04}")'
   WORKSHOP_NAME: rocm-test
   WORKSHOP_USER: workshop-runner
   WORKSHOP_PROJECT_DIR: /home/workshop-runner/rocm-sdk
 backends:
-  tchavadar:
-    type: adhoc
-    wait-timeout: 2h
-    kill-timeout: 12h
-    halt-timeout: 3h
-    discard: echo "Discarding $SPREAD_SYSTEM..."
-    allocate: |
-      echo "Allocating $SPREAD_SYSTEM..."
-      ADDRESS gfx1201:22
-    systems:
-      - gfx-1201:
-          username: talha
-          ssh-rsa-key: '$(HOST: echo "$SPREAD_SSH_KEY")'
-          # ssh-key-pass: '$(HOST: echo "$SPREAD_SSH_KEY_PASS")'
-          environment:
-            DEB_BUILD_OPTIONS: "parallel=4"
   testflinger:
     wait-timeout: 2h
     kill-timeout: 12h
@@ -46,6 +40,12 @@ prepare: |
   lxd init --auto 2>/dev/null || true
 
   snap install workshop --classic
+
+  case "$ROCM_SDK_SOURCE" in
+    store) ;;
+    try) snap install sdkcraft --classic --channel=latest/edge ;;
+    *) echo "Unknown ROCM_SDK_SOURCE: $ROCM_SDK_SOURCE (expected store or try)" >&2; exit 1 ;;
+  esac
 
   apt-get update
   apt-get install -y gettext-base
@@ -78,13 +78,29 @@ prepare: |
   # Workshop lifecycle: run as $WORKSHOP_USER. `env` bypasses sudo's default
   # env-reset so the vars below reach the inner shell verbatim.
   sudo -H -u "$WORKSHOP_USER" env \
+    ROCM_SDK_SOURCE="$ROCM_SDK_SOURCE" \
     ROCM_SDK_CHANNEL="$ROCM_SDK_CHANNEL" \
+    ROCM_SDK_TRY_VERSION="$ROCM_SDK_TRY_VERSION" \
+    WORKSHOP_BASE="$WORKSHOP_BASE" \
     WORKSHOP_NAME="$WORKSHOP_NAME" \
     WORKSHOP_PROJECT_DIR="$WORKSHOP_PROJECT_DIR" \
     bash <<'BASH_EOF'
   set -eu
+  if [ "$ROCM_SDK_SOURCE" = "try" ]; then
+    # The SDK sources (sdkcraft.yaml, hooks/, VERSION) sit at the project root,
+    # next to the bullwinkle task tree. The try area is per user, so this must
+    # run as the same user that launches the workshop.
+    cd "$WORKSHOP_PROJECT_DIR"
+    [ -f VERSION ] || echo "$ROCM_SDK_TRY_VERSION" > VERSION
+    sdkcraft try --platform "${WORKSHOP_BASE}:amd64"
+    export ROCM_SDK_NAME=try-rocm
+  else
+    export ROCM_SDK_NAME=rocm
+  fi
+
   mkdir -p "$WORKSHOP_PROJECT_DIR/.workshop"
-  envsubst < "$WORKSHOP_PROJECT_DIR/tests/workshop.yaml" \
+  envsubst '${WORKSHOP_BASE} ${ROCM_SDK_NAME} ${ROCM_SDK_CHANNEL}' \
+    < "$WORKSHOP_PROJECT_DIR/tests/workshop.yaml" \
     > "$WORKSHOP_PROJECT_DIR/.workshop/${WORKSHOP_NAME}.yaml"
 
   echo "--- workshop definition ---"
@@ -134,8 +150,7 @@ suites:
     summary: level one integration tests for hipsolver package
   packages/hipsparse/tests/level-one/:
     summary: level one integration tests for hipsparse package
-  packages/hipsparselt/tests/level-one/:
-    summary: level one integration tests for hipsparselt package
+  # hipsparselt is not in the resolute archive yet (needs a NEW-package SRU).
   packages/rocalution/tests/level-one/:
     summary: level one integration tests for rocalution package
   packages/hipcub/tests/level-one/:
