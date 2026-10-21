@@ -2,13 +2,29 @@ name: "Test"
 on:
   schedule:
     - cron: "0 2 * * *"
+  pull_request:
+    paths:
+      - sdkcraft.yaml
+      - hooks/**
+      - spread.yaml
+      - tests/**
+      - .github/workflows/test.yml
+      - .github/workflows/run-tests.yml
   workflow_dispatch:
     inputs:
+      sdk-source:
+        description: "store: SDK Store channel; try: pack this ref with sdkcraft try"
+        required: false
+        type: choice
+        options:
+          - store
+          - try
+        default: store
       sdk-channel:
-        description: "rocm SDK channel to test (e.g. latest/edge, 7.1/stable)"
+        description: "rocm SDK channel to test when sdk-source is store (e.g. 7.1/stable)"
         required: false
         type: string
-        default: "latest/edge"
+        default: "7.1/stable"
       spread-params-extra:
         description: "Additional parameters to append to SPREAD_PARAMS (e.g. ...gfx-1100:...rocminfo/)"
         required: false
@@ -16,8 +32,11 @@ on:
         default: ""
 jobs:
   run-tests:
+    # Fork PRs get no secrets, so they cannot reach Testflinger.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/run-tests.yml
     secrets: inherit
     with:
-      sdk-channel: ${{ inputs.sdk-channel || 'latest/edge' }}
+      sdk-source: ${{ inputs.sdk-source || (github.event_name == 'pull_request' && 'try') || 'store' }}
+      sdk-channel: ${{ inputs.sdk-channel || '7.1/stable' }}
       spread-params-extra: ${{ inputs.spread-params-extra || '' }}
