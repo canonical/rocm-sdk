@@ -41,7 +41,12 @@ jobs:
       ROCM_SDK_CHANNEL: ${{ inputs.sdk-channel }}
       SPREAD_PARAMS: "${{ vars.SPREAD_PARAMS }} ${{ inputs.spread-params-extra }}"
       SPREAD_SSH_KEY: ${{ secrets.SPREAD_SSH_KEY }}
-      SPREAD_SSH_KEY_PASS: ${{ secrets.SPREAD_SSH_KEY_PASS }}
+      # The SSH key in SPREAD_SSH_KEY has no passphrase, so none is passed.
+      # If a passphrase-protected key is used: add the SPREAD_SSH_KEY_PASS
+      # secret, uncomment this, and set
+      # `ssh-key-pass: '$(HOST: echo "$SPREAD_SSH_KEY_PASS")'` on the system
+      # in spread.yaml (spread-plus only reads it from there).
+      # SPREAD_SSH_KEY_PASS: ${{ secrets.SPREAD_SSH_KEY_PASS }}
       TESTFLINGER_CLIENT_ID: ${{ secrets.TESTFLINGER_CLIENT_ID }}
       TESTFLINGER_SECRET_KEY: ${{ secrets.TESTFLINGER_SECRET_KEY }}
     outputs:

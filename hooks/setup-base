@@ -22,11 +22,8 @@ INFO_FILE=/etc/rocm-sdk/install-info
 if [ "${ROCM_APT_SERIES}" = "resolute" ]; then
   ROCM_ROOT=/usr
 
-  if [ "${ROCM_FORCE_REINSTALL}" != "1" ] && [ -x "${ROCM_ROOT}/bin/rocminfo" ]; then
-    echo "ROCm already present in ${ROCM_ROOT}; set ROCM_FORCE_REINSTALL=1 to force reinstall."
-    exit 0
-  fi
-
+  # Always run apt: it's a no-op for installed packages, and it picks up
+  # packages added to ROCM_PACKAGES since the last setup.
   apt-get update
   # shellcheck disable=SC2086
   apt-get install -y ${ROCM_PACKAGES}
