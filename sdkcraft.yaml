@@ -4,14 +4,16 @@ summary: AMD ROCm runtime (apt)
 description: |
   ROCm is a software stack, composed primarily of open-source software, that
   provides the tools for programming AMD GPUs. This SDK installs the ROCm
-  runtime and development tools inside the workshop during setup-base using the
-  official AMD ROCm APT repository (default rocm-dev), placing everything under
-  /opt/rocm.
+  runtime and development tools inside the workshop during setup-base (default
+  rocm-dev). On ubuntu@22.04 and ubuntu@24.04 it uses the official AMD ROCm APT
+  repository, placing everything under /opt/rocm. On ubuntu@26.04 it uses the
+  ROCm packages from the Ubuntu archive, installed under /usr.
 license: MIT
 website: https://github.com/canonical/rocm-sdk
 platforms:
   ubuntu@22.04:amd64:
   ubuntu@24.04:amd64:
+  ubuntu@26.04:amd64:
 
 plugs:
   gpu:
@@ -31,6 +33,7 @@ parts:
       case "${CRAFT_PLATFORM}" in
         ubuntu@22.04:amd64) SERIES=jammy  ;;
         ubuntu@24.04:amd64) SERIES=noble  ;;
+        ubuntu@26.04:amd64) SERIES=resolute ;;
         *)            echo "Unsupported platform: ${CRAFT_PLATFORM}" >&2; exit 1 ;;
       esac
       echo "$SERIES" > "$CRAFT_PART_INSTALL/series"

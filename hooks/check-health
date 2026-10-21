@@ -3,6 +3,10 @@ set -eu
 ROCM_ROOT="${ROCM_INSTALL_PREFIX:-/opt/rocm}"
 INFO_FILE=/etc/rocm-sdk/install-info
 
+if [ -f "${INFO_FILE}" ] && grep -q '^prefix=' "${INFO_FILE}"; then
+  ROCM_ROOT=$(grep '^prefix=' "${INFO_FILE}" | cut -d'=' -f2-)
+fi
+
 fail() {
   workshopctl set-health --code="$1" error "$2"
   exit 0

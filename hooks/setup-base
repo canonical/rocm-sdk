@@ -1,15 +1,59 @@
 set -eu
 
-exubuntu@26.04:amd64port DEBIAN_FRONTEND=noninteractive
+export DEBIAN_FRONTEND=noninteractive
 
 ROCM_ROOT="${ROCM_INSTALL_PREFIX:-/opt/rocm}"
 ROCM_APT_BASE_URL="${ROCM_APT_BASE_URL:-https://repo.radeon.com/rocm/apt}"
 ROCM_APT_VERSION="${ROCM_APT_VERSION:-$(cat "$SDK/version")}"
 ROCM_APT_SERIES="${ROCM_APT_SERIES:-$(cat "$SDK/series")}"
-ROCM_PACKAGES="${ROCM_PACKAGES:-rocm-dev}"
+if [ "${ROCM_APT_SERIES}" = "resolute" ]; then
+  # Parity with AMD's rocm-dev, which pulls the rocm-smi CLI and (via
+  # rocm-llvm Recommends) g++; the archive rocm-dev pulls neither.
+  ROCM_PACKAGES="${ROCM_PACKAGES:-rocm-dev rocm-smi g++}"
+else
+  ROCM_PACKAGES="${ROCM_PACKAGES:-rocm-dev}"
+fi
 ROCM_FORCE_REINSTALL="${ROCM_FORCE_REINSTALL:-0}"
 ROCM_KEY_URL="${ROCM_KEY_URL:-https://repo.radeon.com/rocm/rocm.gpg.key}"
 INFO_FILE=/etc/rocm-sdk/install-info
+
+# Ubuntu 26.04 ships ROCm in the archive with an FHS layout under /usr, so the
+# AMD APT repository and the /opt/rocm library path are not used there.
+if [ "${ROCM_APT_SERIES}" = "resolute" ]; then
+  ROCM_ROOT=/usr
+
+  if [ "${ROCM_FORCE_REINSTALL}" != "1" ] && [ -x "${ROCM_ROOT}/bin/rocminfo" ]; then
+    echo "ROCm already present in ${ROCM_ROOT}; set ROCM_FORCE_REINSTALL=1 to force reinstall."
+    exit 0
+  fi
+
+  apt-get update
+  # shellcheck disable=SC2086
+  apt-get install -y ${ROCM_PACKAGES}
+
+  mkdir -p /etc/rocm-sdk
+  # No ROCM_PATH/HIP_PATH exports: the archive packages default to the right
+  # paths, and ROCM_PATH=/usr breaks hipcc's device library lookup.
+
+  ROCM_VERSION="unknown"
+  for pkg in rocm-dev rocm rocminfo; do
+    if dpkg-query -W -f='${Version}' "${pkg}" >/dev/null 2>&1; then
+      ROCM_VERSION="$(dpkg-query -W -f='${Version}' "${pkg}")"
+      break
+    fi
+  done
+
+  cat <<EOF | tee "${INFO_FILE}" >/dev/null
+source=ubuntu-archive
+series=${ROCM_APT_SERIES}
+packages=${ROCM_PACKAGES}
+prefix=${ROCM_ROOT}
+version=${ROCM_VERSION}
+EOF
+
+  echo "Installed ROCm ${ROCM_VERSION} from the Ubuntu archive (${ROCM_APT_SERIES}) into ${ROCM_ROOT}."
+  exit 0
+fi
 
 if [ "${ROCM_FORCE_REINSTALL}" != "1" ] && [ -x "${ROCM_ROOT}/bin/rocminfo" ]; then
   echo "ROCm already present in ${ROCM_ROOT}; set ROCM_FORCE_REINSTALL=1 to force reinstall."

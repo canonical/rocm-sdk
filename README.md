@@ -1,8 +1,8 @@
 # ROCm SDK for Workshop
 
 An AMD GPU runtime and development toolkit. It installs ROCm from the official
-AMD APT repository, typically alongside a language SDK for GPU-accelerated
-workloads.
+AMD APT repository on Ubuntu 22.04 and 24.04, and from the Ubuntu archive on
+Ubuntu 26.04, typically alongside a language SDK for GPU-accelerated workloads.
 
 ---
 
@@ -35,7 +35,17 @@ language SDK and the ROCm companion runtime.
 ### Prerequisites, project layout
 
 The SDK installs the complete ROCm GPU compute development and system toolset
-from the AMD APT repository and automatically configures environment paths.
+and automatically configures environment paths.
+
+| Base           | Source                    | Default packages     | Install prefix |
+| -------------- | ------------------------- | -------------------- | -------------- |
+| `ubuntu@22.04` | AMD APT repository        | `rocm-dev`           | `/opt/rocm`    |
+| `ubuntu@24.04` | AMD APT repository        | `rocm-dev`           | `/opt/rocm`    |
+| `ubuntu@26.04` | Ubuntu archive (ROCm 7.1) | `rocm-dev rocm-smi g++` | `/usr`      |
+
+On `ubuntu@26.04` the ROCm packages come from the Ubuntu archive, so the
+installed ROCm version follows the archive rather than the SDK channel; use
+the `7.1` track there.
 
 To build a project in the workshop:
 
