@@ -1,0 +1,5 @@
+.env
+packages/
+tests/*
+!tests/sh-run
+!tests/workshop.yaml

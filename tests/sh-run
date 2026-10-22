@@ -1,0 +1,42 @@
+#!/bin/bash
+set -eu
+
+WORKSHOP="${WORKSHOP_NAME:-rocm-test}"
+PROJECT="${WORKSHOP_PROJECT_DIR:-$SPREAD_PATH}"
+RUN_AS="${WORKSHOP_USER:-workshop-runner}"
+CWD="$(pwd)"
+
+if [ "$CWD" = "$PROJECT" ]; then
+    CONTAINER_CWD="/project"
+elif [ "${CWD#$PROJECT/}" != "$CWD" ]; then
+    CONTAINER_CWD="/project/${CWD#$PROJECT/}"
+else
+    CONTAINER_CWD="/project"
+fi
+
+# Environment variables forwarded into the workshop container. `sudo -H` runs
+# with env_reset, so we must whitelist them via --preserve-env; `workshop exec
+# --env NAME` (value-less form) then inherits from the CLI environment and
+# forwards them into the LXD container.
+FORWARD_ENV=(DEBIAN_FRONTEND)
+
+sudo_preserve=""
+workshop_env=()
+for var in "${FORWARD_ENV[@]}"; do
+    if [ -n "${!var+x}" ]; then
+        sudo_preserve="${sudo_preserve:+$sudo_preserve,}$var"
+        workshop_env+=(--env "$var")
+    fi
+done
+sudo_flags=()
+[ -n "$sudo_preserve" ] && sudo_flags+=("--preserve-env=$sudo_preserve")
+
+if [ $# -gt 0 ]; then
+    exec sudo -H -u "$RUN_AS" "${sudo_flags[@]}" \
+        -- workshop -p "$PROJECT" \
+            exec "${workshop_env[@]}" --uid 0 -w "$CONTAINER_CWD" "$WORKSHOP" -- bash -c "$*"
+else
+    exec sudo -H -u "$RUN_AS" "${sudo_flags[@]}" \
+        -- workshop -p "$PROJECT" \
+            exec "${workshop_env[@]}" --uid 0 -w "$CONTAINER_CWD" "$WORKSHOP" -- bash -s
+fi

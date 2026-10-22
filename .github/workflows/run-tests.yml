@@ -1,0 +1,175 @@
+name: "Run Spread Tests"
+on:
+  workflow_call:
+    inputs:
+      sdk-source:
+        description: "Where the workshop gets the rocm SDK: store (SDK Store channel) or try (pack this checkout with sdkcraft try)"
+        required: false
+        type: string
+        default: "store"
+      sdk-channel:
+        description: "rocm SDK channel the workshop pulls from when sdk-source is store (e.g. 7.1/stable)"
+        required: false
+        type: string
+        default: "7.1/stable"
+      spread-params-extra:
+        description: "Additional parameters to append to SPREAD_PARAMS"
+        required: false
+        type: string
+        default: ""
+      runner:
+        description: "Self-hosted runner label; must reach Testflinger lab devices over SSH (private-endpoint runners)"
+        required: false
+        type: string
+        default: "self-hosted-linux-amd64-noble-private-endpoint-medium"
+    outputs:
+      spread-results-artifact-id:
+        description: "Artifact ID containing spread results"
+        value: ${{ jobs.run-tests.outputs.spread-results-artifact-id }}
+jobs:
+  run-tests:
+    runs-on: ["self-hosted", "${{ inputs.runner }}"]
+    env:
+      SPREAD_BIN: ${{ github.workspace }}/spread-plus/spread-plus
+      SPREAD_PLUS_REF: "2026.09.22"
+      # Last bullwinkle-cicd commit whose tasks use hipcc (src:rocm-llvm), as
+      # shipped in resolute. Later commits switch to hipcc-rocm for stonking,
+      # which conflicts with resolute's rocm-dev (Depends: hipcc).
+      BULLWINKLE_REF: "02bd2b4af0d1c802fb6e33224feddc401a357696"
+      ROCM_SDK_PROJECT_DIR: ${{ github.workspace }}/rocm-sdk
+      ROCM_SDK_SOURCE: ${{ inputs.sdk-source }}
+      ROCM_SDK_CHANNEL: ${{ inputs.sdk-channel }}
+      SPREAD_PARAMS: "${{ vars.SPREAD_PARAMS }} ${{ inputs.spread-params-extra }}"
+      SPREAD_SSH_KEY: ${{ secrets.SPREAD_SSH_KEY }}
+      # The SSH key in SPREAD_SSH_KEY has no passphrase, so none is passed.
+      # If a passphrase-protected key is used: add the SPREAD_SSH_KEY_PASS
+      # secret, uncomment this, and set
+      # `ssh-key-pass: '$(HOST: echo "$SPREAD_SSH_KEY_PASS")'` on the system
+      # in spread.yaml (spread-plus only reads it from there).
+      # SPREAD_SSH_KEY_PASS: ${{ secrets.SPREAD_SSH_KEY_PASS }}
+      TESTFLINGER_CLIENT_ID: ${{ secrets.TESTFLINGER_CLIENT_ID }}
+      TESTFLINGER_SECRET_KEY: ${{ secrets.TESTFLINGER_SECRET_KEY }}
+    outputs:
+      spread-results-artifact-id: ${{ steps.upload-spread-results.outputs.artifact-id }}
+    steps:
+      - name: Checkout Bullwinkle
+        uses: actions/checkout@v6
+        with:
+          repository: canonical/bullwinkle-cicd
+          ref: ${{ env.BULLWINKLE_REF }}
+          token: ${{ secrets.PE_PAT }}
+          path: .
+      - name: Checkout ROCm SDK
+        uses: actions/checkout@v6
+        with:
+          path: ${{ env.ROCM_SDK_PROJECT_DIR }}
+      - uses: actions/checkout@v6
+        with:
+          repository: canonical/spread-plus
+          ref: ${{ env.SPREAD_PLUS_REF }}
+          path: spread-plus
+      - name: Install Go
+        env:
+          GOCHANNEL: 1.24/stable
+        run: |
+          sudo snap install go --classic --channel "$GOCHANNEL"
+      - name: Build spread
+        run: |
+          cd spread-plus
+          GOARCH="amd64" go build -o spread-plus cmd/spread/main.go
+      - name: Overlay rocm-sdk config onto bullwinkle tree
+        shell: bash
+        run: |
+          # Bullwinkle sits at the workspace root and owns the task tree
+          # under packages/ and tests/. rocm-sdk overrides spread.yaml
+          # (workshop bootstrap + suites) and adds tests/workshop.yaml
+          # which is envsubst-ed at spread prepare time.
+          cp "$ROCM_SDK_PROJECT_DIR/spread.yaml" .
+          mkdir -p tests
+          cp -r "$ROCM_SDK_PROJECT_DIR/tests/." tests/
+          # SDK sources for `sdkcraft try` (sdk-source: try). VERSION only
+          # exists on version branches; spread.yaml writes a default otherwise.
+          cp "$ROCM_SDK_PROJECT_DIR/sdkcraft.yaml" .
+          cp -r "$ROCM_SDK_PROJECT_DIR/hooks" .
+          if [ -f "$ROCM_SDK_PROJECT_DIR/VERSION" ]; then
+            cp "$ROCM_SDK_PROJECT_DIR/VERSION" .
+          fi
+      - name: Route lab devices through aproxy
+        if: startsWith(runner.name, 'private-')
+        shell: bash
+        run: |
+          # Send lab traffic through aproxy, see the self-hosted runner docs.
+          set -eux
+          sudo nft list table ip aproxy
+          APROXY_IP=$(ip route get "$(ip route show 0.0.0.0/0 | grep -oP 'via \K\S+')" | grep -oP 'src \K\S+')
+          APROXY_PORT=$(sudo snap get aproxy listen)
+          APROXY=$APROXY_IP$APROXY_PORT
+          sudo nft -f - << NFT_EOF
+          flush table ip aproxy
+          flush set ip aproxy exclude
+          table ip aproxy {
+            set exclude {
+                type ipv4_addr
+                flags interval
+                auto-merge
+                elements = {
+                  10.0.0.0-10.100.255.255,
+                  10.103.0.0-10.129.255.255,
+                  10.151.0.0-10.238.255.255,
+                  10.245.0.0-10.255.255.255,
+                  127.0.0.0/8,
+                  172.16.0.0/12,
+                  192.168.0.0/16
+                }
+            }
+            chain prerouting {
+              type nat hook prerouting priority dstnat; policy accept;
+              ip daddr != @exclude tcp dport { 1-3127, 3129-65535 } counter dnat to $APROXY
+            }
+            chain output {
+              type nat hook output priority dstnat; policy accept;
+              ip daddr != @exclude tcp dport { 1-3127, 3129-65535 } counter dnat to $APROXY
+            }
+          }
+          NFT_EOF
+          sudo nft list table ip aproxy
+      - name: Run Spread
+        id: run-spread
+        shell: bash
+        run: |
+          set -eu
+          echo "::group::Spread YAML"
+          cat spread.yaml
+          echo "::endgroup::"
+          chmod +x "$SPREAD_BIN"
+          (
+            set -o pipefail
+            echo "results=spread-results.json" >> "$GITHUB_OUTPUT"
+            echo "log=spread.log" >> "$GITHUB_OUTPUT"
+            # shellcheck disable=SC2086
+            "$SPREAD_BIN" -json spread-results.json -artifacts=./logs $SPREAD_PARAMS | tee spread.log
+          )
+      - name: Upload spread results
+        id: upload-spread-results
+        uses: actions/upload-artifact@v6
+        if: always() && !cancelled()
+        with:
+          name: "spread-${{ github.run_id }}-results"
+          retention-days: 3
+          path: |
+            ${{ steps.run-spread.outputs.log }}
+            ${{ steps.run-spread.outputs.results }}
+      - name: Upload spread logs
+        uses: actions/upload-artifact@v6
+        if: always() && !cancelled()
+        with:
+          name: "spread-${{ github.run_id }}-logs"
+          retention-days: 3
+          path: logs/
+      - name: Discard spread workers
+        if: always()
+        run: |
+          shopt -s nullglob
+          for r in .spread-reuse.*.yaml; do
+            "$SPREAD_BIN" -discard -reuse-pid="$(echo "$r" | grep -o -E '[0-9]+')"
+          done
